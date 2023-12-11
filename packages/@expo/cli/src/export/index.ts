@@ -18,6 +18,7 @@ export const expoExport: Command = async (argv) => {
       '--output-dir': String,
       '--platform': [String],
       '--no-minify': Boolean,
+      '--embedded-manifest-path': String,
 
       // Hack: This is added because EAS CLI always includes the flag.
       // If supplied, we'll do nothing with the value, but at least the process won't crash.
@@ -53,6 +54,7 @@ export const expoExport: Command = async (argv) => {
         chalk`-p, --platform <platform>  Options: android, ios, web, all. {dim Default: all}`,
         `-s, --source-maps          Emit JavaScript source maps`,
         `-c, --clear                Clear the bundler cache`,
+        `--embedded-manifest-path   Optional path to embedded manifest (if a check for missing assets is desired)`,
         `-h, --help                 Usage info`,
       ].join('\n')
     );

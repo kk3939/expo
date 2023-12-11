@@ -1,4 +1,5 @@
 import { ExpoConfig } from '@expo/config';
+import chalk from 'chalk';
 import fs from 'fs';
 import minimatch from 'minimatch';
 import path from 'path';
@@ -118,6 +119,23 @@ function shouldBundleAsset(asset: Asset, patterns: string[]) {
   );
 }
 
+function getBuildManifestAssetSet(buildManifestPath?: string) {
+  if (!buildManifestPath) {
+    return undefined;
+  }
+  const embeddedManifestString = fs.readFileSync(buildManifestPath, { encoding: 'utf-8' });
+  const embeddedManifest: { assets: { packagerHash: string }[] } =
+    JSON.parse(embeddedManifestString);
+  return new Set((embeddedManifest.assets ?? []).map((asset) => asset.packagerHash));
+}
+
+function warnAboutMissingAsset(assetHash: string, buildManifestAssetSet: Set<string> | undefined) {
+  if (!buildManifestAssetSet) {
+    return false; // user didn't pass in a build manifest
+  }
+  return !buildManifestAssetSet.has(assetHash);
+}
+
 export async function exportAssetsAsync(
   projectRoot: string,
   {
@@ -126,12 +144,14 @@ export async function exportAssetsAsync(
     bundles: { web, ...bundles },
     baseUrl,
     files = new Map(),
+    embeddedManifestPath,
   }: {
     exp: ExpoConfig;
     bundles: Partial<Record<string, BundleOutput>>;
     outputDir: string;
     baseUrl: string;
     files?: ExportAssetMap;
+    embeddedManifestPath?: string;
   }
 ) {
   // NOTE: We use a different system for static web
@@ -146,6 +166,8 @@ export async function exportAssetsAsync(
     });
   }
 
+  const buildManifestAssetSet = getBuildManifestAssetSet(embeddedManifestPath);
+
   const assets: Asset[] = uniqBy(
     Object.values(bundles).flatMap((bundle) => bundle!.assets),
     (asset) => asset.hash
@@ -154,6 +176,8 @@ export async function exportAssetsAsync(
   let bundledAssetsSet: Set<string> | undefined = undefined;
   let filteredAssets = assets;
   const embeddedHashSet: Set<string> = new Set();
+
+  const missingAssetFiles = new Set();
 
   if (assets[0]?.fileHashes) {
     debug(`Assets = ${JSON.stringify(assets, null, 2)}`);
@@ -167,6 +191,11 @@ export async function exportAssetsAsync(
         const shouldInclude = assetShouldBeIncludedInExport(asset, bundledAssetsSet);
         if (!shouldInclude) {
           embeddedHashSet.add(asset.hash);
+          if (warnAboutMissingAsset(asset.hash, buildManifestAssetSet)) {
+            asset.files.forEach((filepath) =>
+              missingAssetFiles.add(path.relative(projectRoot, filepath))
+            );
+          }
         }
         return shouldInclude;
       });
@@ -175,6 +204,15 @@ export async function exportAssetsAsync(
 
     const hashes = new Set<string>();
 
+    if (missingAssetFiles.size > 0) {
+      Log.warn(
+        chalk.yellow`Some assets were resolved by Metro that are not in the exported manifest, and are not in the embedded manifest:\n${[
+          ...missingAssetFiles,
+        ]
+          .map((filepath) => `  ${filepath}`)
+          .join('\n')}`
+      );
+    }
     // Add assets to copy.
     filteredAssets.forEach((asset) => {
       const assetId =
