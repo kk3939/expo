@@ -13,7 +13,7 @@ import {
   environmentVariableSerializerPlugin,
   serverPreludeSerializerPlugin,
 } from './environmentVariableSerializerPlugin';
-import { ExpoSerializerOptions, baseJSBundle } from './fork/baseJSBundle';
+import { Bundle, ExpoSerializerOptions, baseJSBundle } from './fork/baseJSBundle';
 import { graphToSerialAssetsAsync } from './serializeChunks';
 import { SerialAsset } from './serializerAssets';
 import { env } from '../env';
@@ -27,25 +27,38 @@ export type SerializerParameters = [
   ExpoSerializerOptions,
 ];
 
+type SerializerConfigOptions = {
+  dangerous_beforeChunkSerialization?: (...params: SerializerParameters) => SerializerParameters;
+  dangerous_beforeChunkBundleToString?: (bundle: Bundle) => Bundle;
+  dangerous_afterChunkSerialization?: (serializationOutput: { code: string; map?: string }) => {
+    code: string;
+    map?: string;
+  };
+};
+
 // A serializer that processes the input and returns a modified version.
 // Unlike a serializer, these can be chained together.
 export type SerializerPlugin = (...props: SerializerParameters) => SerializerParameters;
 
-export function withExpoSerializers(config: InputConfigT): InputConfigT {
+export function withExpoSerializers(
+  config: InputConfigT,
+  options: SerializerConfigOptions = {}
+): InputConfigT {
   const processors: SerializerPlugin[] = [];
   processors.push(serverPreludeSerializerPlugin);
   if (!env.EXPO_NO_CLIENT_ENV_VARS) {
     processors.push(environmentVariableSerializerPlugin);
   }
 
-  return withSerializerPlugins(config, processors);
+  return withSerializerPlugins(config, processors, options);
 }
 
 // There can only be one custom serializer as the input doesn't match the output.
 // Here we simply run
 export function withSerializerPlugins(
   config: InputConfigT,
-  processors: SerializerPlugin[]
+  processors: SerializerPlugin[],
+  options: SerializerConfigOptions = {}
 ): InputConfigT {
   const originalSerializer = config.serializer?.customSerializer;
 
@@ -56,7 +69,8 @@ export function withSerializerPlugins(
       customSerializer: createSerializerFromSerialProcessors(
         config,
         processors,
-        originalSerializer
+        originalSerializer ?? null,
+        options
       ),
     },
   };
@@ -64,15 +78,9 @@ export function withSerializerPlugins(
 
 function getDefaultSerializer(
   config: MetroConfig,
-  fallbackSerializer?: Serializer | null
+  fallbackSerializer: Serializer | null,
+  configOptions: SerializerConfigOptions = {}
 ): Serializer {
-  const defaultSerializer =
-    fallbackSerializer ??
-    (async (...params: SerializerParameters) => {
-      const bundle = baseJSBundle(...params);
-      const outputCode = bundleToString(bundle).code;
-      return outputCode;
-    });
   return async (
     ...props: SerializerParameters
   ): Promise<string | { code: string; map: string }> => {
@@ -109,6 +117,13 @@ function getDefaultSerializer(
     })();
 
     if (serializerOptions?.outputMode !== 'static') {
+      const defaultSerializer =
+        fallbackSerializer ??
+        (async (...params: SerializerParameters) => {
+          const bundle = baseJSBundle(...params);
+          const outputCode = bundleToString(bundle).code;
+          return outputCode;
+        });
       return defaultSerializer(...props);
     }
 
@@ -123,6 +138,7 @@ function getDefaultSerializer(
       {
         includeSourceMaps: !!serializerOptions.includeSourceMaps,
         includeBytecode: !!serializerOptions.includeBytecode,
+        ...configOptions,
       },
       ...props
     );
@@ -139,9 +155,10 @@ function getDefaultSerializer(
 export function createSerializerFromSerialProcessors(
   config: MetroConfig,
   processors: (SerializerPlugin | undefined)[],
-  originalSerializer?: Serializer | null
+  originalSerializer: Serializer | null,
+  options: SerializerConfigOptions = {}
 ): Serializer {
-  const finalSerializer = getDefaultSerializer(config, originalSerializer);
+  const finalSerializer = getDefaultSerializer(config, originalSerializer, options);
   return (...props: SerializerParameters): ReturnType<Serializer> => {
     for (const processor of processors) {
       if (processor) {

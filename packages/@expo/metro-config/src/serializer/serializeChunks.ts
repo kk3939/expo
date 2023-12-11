@@ -23,6 +23,8 @@ import pathToRegExp from 'path-to-regexp';
 import { buildHermesBundleAsync } from './exportHermes';
 import { getExportPathForDependencyWithOptions } from './exportPath';
 import {
+  BaseJsBundleOptions,
+  Bundle,
   ExpoSerializerOptions,
   baseJSBundleWithDependencies,
   getBaseUrlOption,
@@ -44,6 +46,12 @@ type ChunkSettings = {
 export type SerializeChunkOptions = {
   includeSourceMaps: boolean;
   includeBytecode: boolean;
+  dangerous_beforeChunkSerialization?: (...params: SerializerParameters) => SerializerParameters;
+  dangerous_beforeChunkBundleToString?: (bundle: Bundle) => Bundle;
+  dangerous_afterChunkSerialization?: (serializationOutput: { code: string; map?: string }) => {
+    code: string;
+    map?: string;
+  };
 };
 
 export async function graphToSerialAssetsAsync(
@@ -301,23 +309,109 @@ class Chunk {
     }
   }
 
-  private serializeToCode(serializerConfig: Partial<SerializerConfigT>, chunks: Chunk[]) {
-    return this.serializeToCodeWithTemplates(serializerConfig, {
+  private getChunkSerializerOptions(
+    serializerConfig: Partial<SerializerConfigT>,
+    chunks: Chunk[]
+  ): BaseJsBundleOptions {
+    const entryFile = this.name;
+    return {
+      ...this.options,
       skipWrapping: false,
       sourceMapUrl: this.getAdjustedSourceMapUrl(serializerConfig) ?? undefined,
       computedAsyncModulePaths: this.getComputedPathsForAsyncDependencies(serializerConfig, chunks),
+      runBeforeMainModule:
+        serializerConfig?.getModulesRunBeforeMainModule?.(
+          path.relative(this.options.projectRoot, entryFile)
+        ) ?? [],
+      runModule: !this.isVendor && !this.isAsync,
+      modulesOnly: this.preModules.size === 0,
+      platform: this.getPlatform(),
+      baseUrl: getBaseUrlOption(this.graph, this.options),
+      splitChunks: getSplitChunksOption(this.graph, this.options),
+    };
+  }
+
+  private serializeChunk(
+    chunkOptions: SerializeChunkOptions,
+    ...props: SerializerParameters
+  ): {
+    code: string;
+    map?: string;
+  } {
+    const [entryFile, preModules, graph, options] = props;
+    const baseJsBundleOptions = options as BaseJsBundleOptions;
+    const { inlineSourceMap, sourceMapUrl, createModuleId, serverRoot, projectRoot } = options;
+    const {
+      includeSourceMaps,
+      dangerous_beforeChunkSerialization,
+      dangerous_beforeChunkBundleToString,
+      dangerous_afterChunkSerialization,
+    } = chunkOptions;
+
+    let baseJSProps: SerializerParameters = [entryFile, preModules, graph, baseJsBundleOptions];
+    if (dangerous_beforeChunkSerialization) {
+      baseJSProps = dangerous_beforeChunkSerialization(...baseJSProps);
+    }
+    let jsSplitBundle = baseJSBundleWithDependencies(
+      baseJSProps[0],
+      baseJSProps[1],
+      [...this.deps], // ???
+      { ...baseJsBundleOptions, ...baseJSProps[3] } // ???
+    );
+
+    if (dangerous_beforeChunkBundleToString) {
+      jsSplitBundle = dangerous_beforeChunkBundleToString(jsSplitBundle);
+    }
+    const code = bundleToString(jsSplitBundle).code;
+
+    const shouldBuildMap = includeSourceMaps && !inlineSourceMap && sourceMapUrl;
+    if (!shouldBuildMap) {
+      return { code };
+    }
+    const modules = [
+      ...preModules,
+      ...getSortedModules([...this.deps], {
+        createModuleId,
+      }),
+    ].map((module) => {
+      // TODO: Make this user-configurable.
+
+      // Make all paths relative to the server root to prevent the entire user filesystem from being exposed.
+      if (module.path.startsWith('/')) {
+        return {
+          ...module,
+          path: '/' + path.relative(serverRoot ?? projectRoot, module.path),
+        };
+      }
+      return module;
     });
+
+    const sourceMap = sourceMapString(modules, {
+      excludeSource: false,
+      ...options,
+    });
+
+    if (dangerous_afterChunkSerialization) {
+      return dangerous_afterChunkSerialization({ code, map: sourceMap });
+    }
+    return { code, map: sourceMap };
   }
 
   async serializeToAssetsAsync(
     serializerConfig: Partial<SerializerConfigT>,
     chunks: Chunk[],
-    {
-      includeSourceMaps,
-      includeBytecode,
-    }: { includeSourceMaps?: boolean; includeBytecode?: boolean }
+    chunkOptions: SerializeChunkOptions
   ): Promise<SerialAsset[]> {
-    const jsCode = this.serializeToCode(serializerConfig, chunks);
+    const { includeBytecode } = chunkOptions;
+
+    const baseJsBundleOptions = this.getChunkSerializerOptions(serializerConfig, chunks);
+    const { code: jsCode, map } = this.serializeChunk(
+      chunkOptions,
+      this.name,
+      [...this.preModules],
+      this.graph,
+      baseJsBundleOptions
+    );
 
     const relativeEntry = path.relative(this.options.projectRoot, this.name);
     const outputFile = this.getFilenameForConfig(
@@ -343,42 +437,13 @@ class Chunk {
 
     const assets: SerialAsset[] = [jsAsset];
 
-    if (
-      // Only include the source map if the `options.sourceMapUrl` option is provided and we are exporting a static build.
-      includeSourceMaps &&
-      !this.options.inlineSourceMap &&
-      this.options.sourceMapUrl
-    ) {
-      const modules = [
-        ...this.preModules,
-        ...getSortedModules([...this.deps], {
-          createModuleId: this.options.createModuleId,
-        }),
-      ].map((module) => {
-        // TODO: Make this user-configurable.
-
-        // Make all paths relative to the server root to prevent the entire user filesystem from being exposed.
-        if (module.path.startsWith('/')) {
-          return {
-            ...module,
-            path:
-              '/' + path.relative(this.options.serverRoot ?? this.options.projectRoot, module.path),
-          };
-        }
-        return module;
-      });
-
-      const sourceMap = sourceMapString(modules, {
-        excludeSource: false,
-        ...this.options,
-      });
-
+    if (map) {
       assets.push({
         filename: this.options.dev ? jsAsset.filename + '.map' : outputFile + '.map',
         originFilename: jsAsset.originFilename,
         type: 'map',
         metadata: {},
-        source: sourceMap,
+        source: map,
       });
     }
 
@@ -527,7 +592,7 @@ function gatherChunks(
 async function serializeChunksAsync(
   chunks: Set<Chunk>,
   serializerConfig: Partial<SerializerConfigT>,
-  { includeSourceMaps, includeBytecode }: SerializeChunkOptions
+  chunkOptions: SerializeChunkOptions
 ) {
   const jsAssets: SerialAsset[] = [];
 
@@ -535,10 +600,7 @@ async function serializeChunksAsync(
   await Promise.all(
     chunksArray.map(async (chunk) => {
       jsAssets.push(
-        ...(await chunk.serializeToAssetsAsync(serializerConfig, chunksArray, {
-          includeSourceMaps,
-          includeBytecode,
-        }))
+        ...(await chunk.serializeToAssetsAsync(serializerConfig, chunksArray, chunkOptions))
       );
     })
   );

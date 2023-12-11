@@ -17,8 +17,9 @@ import { FileStore } from './file-store';
 import { getModulesPaths, getServerRoot } from './getModulesPaths';
 import { getWatchFolders } from './getWatchFolders';
 import { getRewriteRequestUrl } from './rewriteRequestUrl';
+import { Bundle } from './serializer/fork/baseJSBundle';
 import { JSModule } from './serializer/getCssDeps';
-import { withExpoSerializers } from './serializer/withExpoSerializers';
+import { SerializerParameters, withExpoSerializers } from './serializer/withExpoSerializers';
 import { getPostcssConfigHash } from './transform-worker/postcss';
 import { importMetroConfig } from './traveling/metro-config';
 const debug = require('debug')('expo:metro:config') as typeof console.log;
@@ -41,6 +42,13 @@ export interface DefaultConfigOptions {
    * is subject to change, and native support for CSS Modules may be added in the future during a non-major SDK release.
    */
   isCSSEnabled?: boolean;
+
+  dangerous_beforeChunkSerialization?: (...params: SerializerParameters) => SerializerParameters;
+  dangerous_beforeChunkBundleToString?: (bundle: Bundle) => Bundle;
+  dangerous_afterChunkSerialization?: (serializationOutput: { code: string; map?: string }) => {
+    code: string;
+    map?: string;
+  };
 }
 
 function getAssetPlugins(projectRoot: string): string[] {
@@ -91,7 +99,13 @@ function patchMetroGraphToSupportUncachedModules() {
 
 export function getDefaultConfig(
   projectRoot: string,
-  { mode, isCSSEnabled = true }: DefaultConfigOptions = {}
+  {
+    mode,
+    isCSSEnabled = true,
+    dangerous_beforeChunkSerialization,
+    dangerous_beforeChunkBundleToString,
+    dangerous_afterChunkSerialization,
+  }: DefaultConfigOptions = {}
 ): InputConfigT {
   const { getDefaultConfig: getDefaultMetroConfig, mergeConfig } = importMetroConfig(projectRoot);
 
@@ -255,7 +269,11 @@ export function getDefaultConfig(
     },
   });
 
-  return withExpoSerializers(metroConfig);
+  return withExpoSerializers(metroConfig, {
+    dangerous_beforeChunkSerialization,
+    dangerous_beforeChunkBundleToString,
+    dangerous_afterChunkSerialization,
+  });
 }
 
 export async function loadAsync(
