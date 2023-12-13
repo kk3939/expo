@@ -8,6 +8,8 @@
 
 ### 🐛 Bug fixes
 
+- Remove extraneous Babel pass. ([#25930](https://github.com/expo/expo/pull/25930) by [@kitten](https://github.com/kitten))
+
 ### 💡 Others
 
 ## 0.16.1 — 2023-12-13
