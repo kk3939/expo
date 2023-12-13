@@ -43,12 +43,17 @@ export interface DefaultConfigOptions {
    */
   isCSSEnabled?: boolean;
 
-  dangerous_beforeChunkSerialization?: (...params: SerializerParameters) => SerializerParameters;
-  dangerous_beforeChunkBundleToString?: (bundle: Bundle) => Bundle;
-  dangerous_afterChunkSerialization?: (serializationOutput: { code: string; map?: string }) => {
+  unstable_beforeChunkSerializationPlugins?: ((
+    ...params: SerializerParameters
+  ) => SerializerParameters)[];
+  unstable_beforeChunkBundleToStringPlugins?: ((bundle: Bundle) => Bundle)[];
+  unstable_afterChunkSerializationPlugins?: ((serializationOutput: {
     code: string;
     map?: string;
-  };
+  }) => {
+    code: string;
+    map?: string;
+  })[];
 }
 
 function getAssetPlugins(projectRoot: string): string[] {
@@ -102,9 +107,9 @@ export function getDefaultConfig(
   {
     mode,
     isCSSEnabled = true,
-    dangerous_beforeChunkSerialization,
-    dangerous_beforeChunkBundleToString,
-    dangerous_afterChunkSerialization,
+    unstable_beforeChunkSerializationPlugins,
+    unstable_beforeChunkBundleToStringPlugins,
+    unstable_afterChunkSerializationPlugins,
   }: DefaultConfigOptions = {}
 ): InputConfigT {
   const { getDefaultConfig: getDefaultMetroConfig, mergeConfig } = importMetroConfig(projectRoot);
@@ -270,9 +275,9 @@ export function getDefaultConfig(
   });
 
   return withExpoSerializers(metroConfig, {
-    dangerous_beforeChunkSerialization,
-    dangerous_beforeChunkBundleToString,
-    dangerous_afterChunkSerialization,
+    unstable_beforeChunkSerializationPlugins,
+    unstable_beforeChunkBundleToStringPlugins,
+    unstable_afterChunkSerializationPlugins,
   });
 }
 

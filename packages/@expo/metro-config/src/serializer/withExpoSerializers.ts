@@ -27,13 +27,18 @@ export type SerializerParameters = [
   ExpoSerializerOptions,
 ];
 
-type SerializerConfigOptions = {
-  dangerous_beforeChunkSerialization?: (...params: SerializerParameters) => SerializerParameters;
-  dangerous_beforeChunkBundleToString?: (bundle: Bundle) => Bundle;
-  dangerous_afterChunkSerialization?: (serializationOutput: { code: string; map?: string }) => {
+export type SerializerConfigOptions = {
+  unstable_beforeChunkSerializationPlugins?: ((
+    ...params: SerializerParameters
+  ) => SerializerParameters)[];
+  unstable_beforeChunkBundleToStringPlugins?: ((bundle: Bundle) => Bundle)[];
+  unstable_afterChunkSerializationPlugins?: ((serializationOutput: {
     code: string;
     map?: string;
-  };
+  }) => {
+    code: string;
+    map?: string;
+  })[];
 };
 
 // A serializer that processes the input and returns a modified version.

@@ -43,15 +43,20 @@ type ChunkSettings = {
   test: RegExp;
 };
 
-export type SerializeChunkOptions = {
+type SerializeChunkOptions = {
   includeSourceMaps: boolean;
   includeBytecode: boolean;
-  dangerous_beforeChunkSerialization?: (...params: SerializerParameters) => SerializerParameters;
-  dangerous_beforeChunkBundleToString?: (bundle: Bundle) => Bundle;
-  dangerous_afterChunkSerialization?: (serializationOutput: { code: string; map?: string }) => {
+  unstable_beforeChunkSerializationPlugins?: ((
+    ...params: SerializerParameters
+  ) => SerializerParameters)[];
+  unstable_beforeChunkBundleToStringPlugins?: ((bundle: Bundle) => Bundle)[];
+  unstable_afterChunkSerializationPlugins?: ((serializationOutput: {
     code: string;
     map?: string;
-  };
+  }) => {
+    code: string;
+    map?: string;
+  })[];
 };
 
 export async function graphToSerialAssetsAsync(
@@ -331,6 +336,25 @@ class Chunk {
     };
   }
 
+  private runPluginsSingleArgument<T>(plugins: ((params: T) => T)[], initialParams: T): T {
+    let params = initialParams;
+    for (const plugin of plugins) {
+      params = plugin(params);
+    }
+    return params;
+  }
+
+  private runPluginsSpreadArgument<T extends any[]>(
+    plugins: ((...params: T) => T)[],
+    initialParams: T
+  ): T {
+    let params = initialParams;
+    for (const plugin of plugins) {
+      params = plugin(...params);
+    }
+    return params;
+  }
+
   private serializeChunk(
     chunkOptions: SerializeChunkOptions,
     ...props: SerializerParameters
@@ -343,14 +367,17 @@ class Chunk {
     const { inlineSourceMap, sourceMapUrl, createModuleId, serverRoot, projectRoot } = options;
     const {
       includeSourceMaps,
-      dangerous_beforeChunkSerialization,
-      dangerous_beforeChunkBundleToString,
-      dangerous_afterChunkSerialization,
+      unstable_beforeChunkSerializationPlugins,
+      unstable_beforeChunkBundleToStringPlugins,
+      unstable_afterChunkSerializationPlugins,
     } = chunkOptions;
 
     let baseJSProps: SerializerParameters = [entryFile, preModules, graph, baseJsBundleOptions];
-    if (dangerous_beforeChunkSerialization) {
-      baseJSProps = dangerous_beforeChunkSerialization(...baseJSProps);
+    if (unstable_beforeChunkSerializationPlugins) {
+      baseJSProps = this.runPluginsSpreadArgument(
+        unstable_beforeChunkSerializationPlugins,
+        baseJSProps
+      );
     }
     let jsSplitBundle = baseJSBundleWithDependencies(
       baseJSProps[0],
@@ -359,8 +386,11 @@ class Chunk {
       { ...baseJsBundleOptions, ...baseJSProps[3] } // ???
     );
 
-    if (dangerous_beforeChunkBundleToString) {
-      jsSplitBundle = dangerous_beforeChunkBundleToString(jsSplitBundle);
+    if (unstable_beforeChunkBundleToStringPlugins) {
+      jsSplitBundle = this.runPluginsSingleArgument(
+        unstable_beforeChunkBundleToStringPlugins,
+        jsSplitBundle
+      );
     }
     const code = bundleToString(jsSplitBundle).code;
 
@@ -391,10 +421,14 @@ class Chunk {
       ...options,
     });
 
-    if (dangerous_afterChunkSerialization) {
-      return dangerous_afterChunkSerialization({ code, map: sourceMap });
+    if (unstable_afterChunkSerializationPlugins) {
+      return this.runPluginsSingleArgument(unstable_afterChunkSerializationPlugins, {
+        code,
+        map: sourceMap,
+      });
+    } else {
+      return { code, map: sourceMap };
     }
-    return { code, map: sourceMap };
   }
 
   async serializeToAssetsAsync(
